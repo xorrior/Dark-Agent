@@ -83,6 +83,15 @@ class DarkAgent(PayloadType):
             required=True,
             group_name="Communication Options"
         ),
+        BuildParameter(
+            name="output_format",
+            parameter_type=BuildParameterType.ChooseOne,
+            description="Output format: 'bin' produces a standalone executable, 'dylib' produces a macOS dynamic library with an exported dark_agent_init() function.",
+            choices=["bin", "dylib"],
+            default_value="bin",
+            required=False,
+            group_name="Build Options"
+        ),
     ]
 
     agent_path = pathlib.Path(".") / "dark_agent" / "mythic"
@@ -217,7 +226,14 @@ class DarkAgent(PayloadType):
         SYMMETRIC_JITTER = self.get_parameter("symmetric_jitter")
         REALTIME = self.get_parameter("realtime")
         CHUNK_SIZE = self.get_parameter("chunk_size")
+        OUTPUT_FORMAT = self.get_parameter("output_format")
         IS_MACOS = self.selected_os == "macOS"
+        IS_DYLIB = OUTPUT_FORMAT == "dylib"
+
+        if IS_DYLIB and not IS_MACOS:
+            resp.set_status(BuildStatus.Error)
+            resp.build_message = "dylib output format is only supported for macOS builds"
+            return resp
         tmp = tempfile.TemporaryDirectory(suffix=self.uuid)
         agent_build_path = Path(tmp.name)
 
@@ -418,7 +434,17 @@ class DarkAgent(PayloadType):
                     profile_name = c2_profile
                     break
 
-            if IS_MACOS:
+            if IS_MACOS and IS_DYLIB:
+                # macOS dylib cross-compile via Crystal + Zig.
+                # Produces a .dylib with exported dark_agent_init() symbol.
+                if DEBUG_MODE:
+                    build_cmd.extend(["-p", profile_name, "-L"])
+                    output_file = agent_build_path / "output/dark-agent-macos-debug.dylib"
+                else:
+                    build_cmd.extend(["-p", profile_name, "-l"])
+                    output_file = agent_build_path / "output/dark-agent-macos.dylib"
+                binary_type = "Mach-O dylib"
+            elif IS_MACOS:
                 # macOS cross-compile via Crystal + Zig.
                 # OpenSSL is statically linked for both platforms with no runtime libssl dependency.
                 if DEBUG_MODE:
@@ -466,7 +492,7 @@ class DarkAgent(PayloadType):
                     StepSuccess=True
                 ))
 
-                self.file_extension = "bin"
+                self.file_extension = "dylib" if IS_DYLIB else "bin"
                 resp.status = BuildStatus.Success
                 resp.payload = open(output_file, 'rb').read()
                 encryption_status = "encryption enabled" if ENCRYPTION else "ENCRYPTION DISABLED"
