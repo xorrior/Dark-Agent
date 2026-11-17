@@ -202,6 +202,12 @@ build_macos() {
         exit 1
     fi
 
+    # Add profile-specific flags (same logic as build_agent)
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
     log_info "Phase 1: Crystal → object file (target: ${MACOS_CRYSTAL_TARGET})"
     PKG_CONFIG_LIBDIR="${MACOS_PREFIX}/lib/pkgconfig" \
     crystal build \
@@ -210,6 +216,7 @@ build_macos() {
         --static \
         -Dpreview_mt \
         -Dgc_none \
+        ${profile_flags} \
         ${crystal_flags} \
         -o "${output_file}" \
         src/dark/dark-agent.cr
@@ -296,6 +303,12 @@ build_macos_dylib() {
         exit 1
     fi
 
+    # Add profile-specific flags (same logic as build_agent)
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
     log_info "Phase 1: Crystal → object file (target: ${MACOS_CRYSTAL_TARGET})"
     PKG_CONFIG_LIBDIR="${MACOS_PREFIX}/lib/pkgconfig" \
     crystal build \
@@ -304,6 +317,7 @@ build_macos_dylib() {
         --static \
         -Dpreview_mt \
         -Dgc_none \
+        ${profile_flags} \
         ${crystal_flags} \
         -o "${CRYSTAL_OUT}" \
         src/dark/dark-agent-dylib.cr
