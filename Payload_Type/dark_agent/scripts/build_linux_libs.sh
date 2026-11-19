@@ -90,14 +90,17 @@ LIBEVENT_VER=2.1.12
 wget -q "https://github.com/libevent/libevent/releases/download/release-${LIBEVENT_VER}-stable/libevent-${LIBEVENT_VER}-stable.tar.gz"
 tar -xzf "libevent-${LIBEVENT_VER}-stable.tar.gz"
 cd "libevent-${LIBEVENT_VER}-stable"
-# HAVE_ARC4RANDOM_BUF: glibc's stdlib.h already declares arc4random_buf,
-# which conflicts with libevent's static definition. This tells libevent
-# to use the system version instead of defining its own.
+# Cross-compiling: configure can't run test binaries, so it assumes
+# arc4random/arc4random_buf don't exist and libevent defines its own
+# static versions. But Zig's bundled glibc already declares arc4random_buf
+# as extern, causing a static-vs-extern conflict. Force the cache variables
+# so configure knows these functions exist and skips the bundled arc4random.c.
 CC="${ZIG_CC}" \
 CXX="${ZIG_CXX}" \
-CFLAGS="-DHAVE_ARC4RANDOM_BUF" \
 AR="/tmp/zig-ar" \
 RANLIB="/tmp/zig-ranlib" \
+ac_cv_func_arc4random=yes \
+ac_cv_func_arc4random_buf=yes \
 ./configure \
     --host=aarch64-linux-gnu \
     --disable-shared \
