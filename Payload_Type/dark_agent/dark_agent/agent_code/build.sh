@@ -210,6 +210,120 @@ build_socks_debug() {
     build_agent "socks-debug" "output/dark-agent-socks-debug" "-D debug -D debug_socks" "SOCKS debug mode"
 }
 
+# Build C BOF object files for Linux aarch64 using Zig cross-compiler
+build_bofs_linux_cross() {
+    log_info "Building BOF object files for Linux aarch64..."
+    local LINUX_ZIG_TARGET="aarch64-linux-gnu"
+    local build_error=0
+
+    mkdir -p output/bofs
+
+    find src/bofs -name "*.c" | while read c_file; do
+        base_name=$(basename "$c_file")
+        output_name="${base_name%.c}.o"
+        log_action "Compiling ${base_name} for Linux aarch64"
+        /opt/zig/zig cc \
+            -target "${LINUX_ZIG_TARGET}" \
+            -D__aarch64__=1 -D__arm64__=1 \
+            -D_FORTIFY_SOURCE=0 \
+            -fPIC -c "${c_file}" \
+            -o "output/bofs/${output_name}" \
+            -I src/bofs/includes -w
+
+        if [ $? -eq 0 ]; then
+            log_success "Built ${output_name} (Linux aarch64)"
+        else
+            log_error "Failed to build ${output_name}"
+            build_error=1
+        fi
+    done
+
+    if [ $build_error -eq 1 ]; then
+        log_error "One or more Linux aarch64 BOFs failed to build"
+        exit 1
+    fi
+}
+
+# Build Dark Agent for Linux aarch64 via two-phase Crystal cross-compile + Zig link
+build_linux_cross() {
+    local crystal_flags="$1"   # extra crystal flags (e.g. "-D debug")
+    local output_file="$2"
+    local description="$3"
+
+    local LINUX_CRYSTAL_TARGET="aarch64-linux-gnu"
+    local LINUX_ZIG_TARGET="aarch64-linux-gnu"
+    local LINUX_PREFIX="/opt/multiarch-libs/aarch64-linux-gnu"
+    local OBJ_FILE="${output_file}.o"
+
+    log_info "Building Dark Agent for Linux aarch64 (${description}) via cross-compile..."
+
+    if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
+        log_error "DARK_AGENT_CONFIG_PATH not set"
+        exit 1
+    fi
+
+    # Add profile-specific flags
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
+    log_info "Phase 1: Crystal → object file (target: ${LINUX_CRYSTAL_TARGET})"
+    PKG_CONFIG_LIBDIR="${LINUX_PREFIX}/lib/pkgconfig" \
+    crystal build \
+        --cross-compile \
+        --target "${LINUX_CRYSTAL_TARGET}" \
+        --static \
+        -Dpreview_mt \
+        ${profile_flags} \
+        ${crystal_flags} \
+        -o "${output_file}" \
+        src/dark/dark-agent.cr
+
+    if [ $? -ne 0 ]; then
+        log_error "Crystal cross-compile failed"
+        exit 1
+    fi
+
+    log_info "Phase 2: Zig → ELF binary (aarch64)"
+    /opt/zig/zig cc \
+        -target "${LINUX_ZIG_TARGET}" \
+        "${OBJ_FILE}" \
+        -o "${output_file}" \
+        -L"${LINUX_PREFIX}/lib" \
+        -L"${LINUX_PREFIX}/lib64" \
+        -Wl,--as-needed \
+        -Wl,-Bstatic \
+        -lssl -lcrypto \
+        -lpcre2-8 \
+        -lgc \
+        -levent \
+        -lz \
+        -Wl,-Bdynamic \
+        -lpthread \
+        -ldl \
+        -lm
+
+    if [ $? -ne 0 ]; then
+        log_error "Zig link failed"
+        exit 1
+    fi
+
+    rm -f "${OBJ_FILE}"
+
+    log_success "Built Dark Agent (${description}) for Linux aarch64"
+}
+
+build_linux_cross_release() {
+    build_linux_cross "--release --no-debug" "output/dark-agent-linux-aarch64" "release mode"
+    strip output/dark-agent-linux-aarch64
+    log_success "Stripped release binary ($(du -sh output/dark-agent-linux-aarch64 | cut -f1))"
+}
+
+build_linux_cross_debug() {
+    build_linux_cross "-D debug" "output/dark-agent-linux-aarch64-debug" "debug mode"
+}
+
 # Build Dark Agent for macOS (Mach-O binary) via two-phase Crystal cross-compile + Zig link
 build_macos() {
     local crystal_flags="$1"   # extra crystal flags (e.g. "-D debug")
@@ -414,6 +528,7 @@ build_macos_dylib_debug() {
 clean() {
     log_action "Cleaning output directory..."
     rm -f output/dark-agent output/dark-agent-debug output/dark-agent-direct output/dark-agent-direct.ll output/socks-server output/dark-agent-socks-debug output/dark-agent-macos output/dark-agent-macos-debug output/dark-agent-macos*.o
+    rm -f output/dark-agent-linux-aarch64 output/dark-agent-linux-aarch64-debug output/dark-agent-linux-aarch64*.o
     rm -f output/dark-agent-macos.dylib output/dark-agent-macos-debug.dylib output/crystal_dylib_init.o
     rm -f output/bofs/*.o output/bofs/macos/*.o 2>/dev/null || true
     log_success "Cleaned Dark Agent builds, dylibs, and BOF object files"
@@ -432,11 +547,14 @@ usage() {
     echo "  -s    Build standalone SOCKS server"
     echo "  -S    Build Dark Agent with SOCKS debug mode (suppresses HTTP logs)"
     echo "  -p    Specify profile type (http or httpx)"
-    echo "  -B    Build BOF object files for macOS (aarch64)"
+    echo "  -B    Build BOF object files for macOS"
+    echo "  -e    Build BOF object files for Linux aarch64"
     echo "  -m    Build macOS Mach-O binary (release)"
     echo "  -M    Build macOS Mach-O binary (debug)"
     echo "  -l    Build macOS dylib (release)"
     echo "  -L    Build macOS dylib (debug)"
+    echo "  -f    Build Linux aarch64 ELF binary (release)"
+    echo "  -F    Build Linux aarch64 ELF binary (debug)"
     echo "  -h    Show this help message"
 }
 
@@ -458,6 +576,9 @@ execute_build() {
             ;;
         "bofs-macos")
             build_bofs_macos
+            ;;
+        "bofs-linux-cross")
+            build_bofs_linux_cross
             ;;
         "debug")
             build_debug
@@ -486,6 +607,12 @@ execute_build() {
         "macos-dylib-debug")
             build_macos_dylib_debug
             ;;
+        "linux-cross")
+            build_linux_cross_release
+            ;;
+        "linux-cross-debug")
+            build_linux_cross_debug
+            ;;
         "clean")
             clean
             return 0
@@ -505,7 +632,7 @@ if [ $# -eq 0 ]; then
     exit 0
 fi
 
-while getopts "abdrcDsShjBmMlLp:x:" opt; do
+while getopts "abdrcDsShjBemMlLfFp:x:" opt; do
     case $opt in
         a) BUILD_ACTION="all" ;;
         b) BUILD_ACTION="bofs" ;;
@@ -517,10 +644,13 @@ while getopts "abdrcDsShjBmMlLp:x:" opt; do
         S) BUILD_ACTION="socks-debug" ;;
         h) BUILD_ACTION="help" ;;
         B) BUILD_ACTION="bofs-macos" ;;
+        e) BUILD_ACTION="bofs-linux-cross" ;;
         m) BUILD_ACTION="macos" ;;
         M) BUILD_ACTION="macos-debug" ;;
         l) BUILD_ACTION="macos-dylib" ;;
         L) BUILD_ACTION="macos-dylib-debug" ;;
+        f) BUILD_ACTION="linux-cross" ;;
+        F) BUILD_ACTION="linux-cross-debug" ;;
         p)
             PROFILE_TYPE="$OPTARG"
             if [ "$PROFILE_TYPE" != "http" ] && [ "$PROFILE_TYPE" != "httpx" ]; then

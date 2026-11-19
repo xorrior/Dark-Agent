@@ -89,6 +89,13 @@ RUN chmod +x /tmp/build_macos_libs.sh && \
     /tmp/build_macos_libs.sh x86_64 && \
     rm /tmp/build_macos_libs.sh
 
+# Build Linux aarch64 static libraries via Zig cross-compiler
+# Native x86_64 libs come from system packages + the OpenSSL build above
+COPY scripts/build_linux_libs.sh /tmp/build_linux_libs.sh
+RUN chmod +x /tmp/build_linux_libs.sh && \
+    /tmp/build_linux_libs.sh && \
+    rm /tmp/build_linux_libs.sh
+
 RUN apt clean && rm -Rf /tmp/*
 
 WORKDIR /Mythic/

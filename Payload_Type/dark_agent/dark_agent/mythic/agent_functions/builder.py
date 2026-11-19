@@ -93,11 +93,11 @@ class DarkAgent(PayloadType):
             group_name="Build Options"
         ),
         BuildParameter(
-            name="macos_arch",
+            name="architecture",
             parameter_type=BuildParameterType.ChooseOne,
-            description="macOS target architecture. Only applies to macOS builds.",
-            choices=["aarch64", "x86_64"],
-            default_value="aarch64",
+            description="Target CPU architecture. x86_64 is native for Linux, aarch64 requires cross-compilation. Both architectures are cross-compiled for macOS.",
+            choices=["x86_64", "aarch64"],
+            default_value="x86_64",
             required=False,
             group_name="Build Options"
         ),
@@ -236,7 +236,7 @@ class DarkAgent(PayloadType):
         REALTIME = self.get_parameter("realtime")
         CHUNK_SIZE = self.get_parameter("chunk_size")
         OUTPUT_FORMAT = self.get_parameter("output_format")
-        MACOS_ARCH = self.get_parameter("macos_arch")
+        ARCHITECTURE = self.get_parameter("architecture")
         IS_MACOS = self.selected_os == "macOS"
         IS_DYLIB = OUTPUT_FORMAT == "dylib"
 
@@ -321,8 +321,56 @@ class DarkAgent(PayloadType):
                         StepStdout=f"Compiled and stored {len(bof_names)} macOS aarch64 BOF files: {', '.join(bof_names)}.\n\nOutput: {stdout.decode()}",
                         StepSuccess=True
                     ))
+            elif ARCHITECTURE == "aarch64":
+                # Cross-compile BOFs for Linux aarch64 using Zig
+                build_cmd = ["./build.sh", "-e"]
+                proc = await asyncio.create_subprocess_exec(
+                    *build_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=str(agent_build_path)
+                )
+                stdout, stderr = await proc.communicate()
+
+                if proc.returncode != 0:
+                    bof_error = stderr.decode()
+                    await SendMythicRPCPayloadUpdatebuildStep(MythicRPCPayloadUpdateBuildStepMessage(
+                        PayloadUUID=self.uuid,
+                        StepName="Building BOFs",
+                        StepStdout=f"Error compiling Linux aarch64 BOFs: {bof_error}",
+                        StepSuccess=False
+                    ))
+                    raise Exception(f"Failed to build Linux aarch64 BOFs: {bof_error}")
+                else:
+                    bofs_dir = agent_build_path / "output" / "bofs"
+                    bof_files = [f for f in os.listdir(bofs_dir) if f.endswith('.o')]
+
+                    bof_names = []
+                    for bof_file in bof_files:
+                        bof_path = bofs_dir / bof_file
+                        bof_name = os.path.splitext(bof_file)[0]
+                        bof_content = open(bof_path, 'rb').read()
+
+                        file_resp = await SendMythicRPCFileCreate(MythicRPCFileCreateMessage(
+                            PayloadUUID=self.uuid,
+                            FileContents=bof_content,
+                            Filename=f"{self.uuid}_{bof_file}",
+                            Comment=f"Available BOF (Linux aarch64): {bof_name}"
+                        ))
+
+                        if not file_resp.Success:
+                            logging.error(f"Failed to store BOF {bof_name}: {file_resp.Error}")
+                        else:
+                            bof_names.append(bof_name)
+
+                    await SendMythicRPCPayloadUpdatebuildStep(MythicRPCPayloadUpdateBuildStepMessage(
+                        PayloadUUID=self.uuid,
+                        StepName="Building BOFs",
+                        StepStdout=f"Compiled and stored {len(bof_names)} Linux aarch64 BOF files: {', '.join(bof_names)}.\n\nOutput: {stdout.decode()}",
+                        StepSuccess=True
+                    ))
             else:
-                # Build BOFs (Linux only)
+                # Build BOFs (Linux x86_64 native)
                 build_cmd = ["./build.sh", "-b"]
                 proc = await asyncio.create_subprocess_exec(
                     *build_cmd,
@@ -422,9 +470,11 @@ class DarkAgent(PayloadType):
                 # Set environment variable for build script to use
                 self.env["DARK_AGENT_CONFIG_PATH"] = str(config_file)
 
-            # Set macOS architecture for cross-compile
+            # Set architecture for cross-compile builds
             if IS_MACOS:
-                self.env["MACOS_ARCH"] = MACOS_ARCH
+                self.env["MACOS_ARCH"] = ARCHITECTURE
+            else:
+                self.env["LINUX_ARCH"] = ARCHITECTURE
 
             await SendMythicRPCPayloadUpdatebuildStep(MythicRPCPayloadUpdateBuildStepMessage(
                 PayloadUUID=self.uuid,
@@ -468,8 +518,17 @@ class DarkAgent(PayloadType):
                     build_cmd.extend(["-p", profile_name, "-m"])
                     output_file = agent_build_path / "output/dark-agent-macos"
                 binary_type = "Mach-O"
+            elif ARCHITECTURE == "aarch64":
+                # Linux aarch64 cross-compile via Crystal + Zig.
+                if DEBUG_MODE:
+                    build_cmd.extend(["-p", profile_name, "-F"])
+                    output_file = agent_build_path / "output/dark-agent-linux-aarch64-debug"
+                else:
+                    build_cmd.extend(["-p", profile_name, "-f"])
+                    output_file = agent_build_path / "output/dark-agent-linux-aarch64"
+                binary_type = "ELF (aarch64)"
             else:
-                # Linux build
+                # Linux x86_64 native build
                 build_cmd.extend(["-p", profile_name])
                 if DEBUG_MODE:
                     build_cmd.append("-d")
