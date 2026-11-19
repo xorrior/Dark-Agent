@@ -80,12 +80,13 @@ RUN mkdir -p /opt/macos-sdk && \
     tar -xf /tmp/macos-sdk.tar.xz -C /opt/macos-sdk && \
     rm /tmp/macos-sdk.tar.xz
 
-# Build macOS static libraries via Zig cross-compiler
+# Build macOS static libraries via Zig cross-compiler for both architectures
 # Produces: libssl.a, libcrypto.a, libpcre2-8.a, libevent.a, libgc.a
-# under /opt/multiarch-libs/aarch64-apple-darwin/
+# under /opt/multiarch-libs/{aarch64,x86_64}-apple-darwin/
 COPY scripts/build_macos_libs.sh /tmp/build_macos_libs.sh
 RUN chmod +x /tmp/build_macos_libs.sh && \
-    /tmp/build_macos_libs.sh && \
+    /tmp/build_macos_libs.sh aarch64 && \
+    /tmp/build_macos_libs.sh x86_64 && \
     rm /tmp/build_macos_libs.sh
 
 RUN apt clean && rm -Rf /tmp/*

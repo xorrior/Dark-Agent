@@ -51,11 +51,39 @@ build_bofs() {
     fi
 }
 
-# Build C BOF object files for macOS (aarch64) using Zig cross-compiler
+# Resolve macOS architecture settings from MACOS_ARCH env var (default: aarch64)
+resolve_macos_arch() {
+    local arch="${MACOS_ARCH:-aarch64}"
+    case "$arch" in
+        aarch64)
+            MACOS_CRYSTAL_TARGET="aarch64-apple-macosx12.0"
+            MACOS_ZIG_TARGET="aarch64-macos-none"
+            MACOS_BOF_ZIG_TARGET="aarch64-linux-none"
+            MACOS_ARCH_TRIPLE="aarch64-apple-darwin"
+            MACOS_ARCH_DEFINES="-D__aarch64__=1 -D__arm64__=1"
+            ;;
+        x86_64)
+            MACOS_CRYSTAL_TARGET="x86_64-apple-macosx12.0"
+            MACOS_ZIG_TARGET="x86_64-macos-none"
+            MACOS_BOF_ZIG_TARGET="x86_64-linux-none"
+            MACOS_ARCH_TRIPLE="x86_64-apple-darwin"
+            MACOS_ARCH_DEFINES="-D__x86_64__=1 -D__amd64__=1"
+            ;;
+        *)
+            log_error "Unsupported macOS architecture: $arch. Use 'aarch64' or 'x86_64'"
+            exit 1
+            ;;
+    esac
+    MACOS_PREFIX="/opt/multiarch-libs/${MACOS_ARCH_TRIPLE}"
+    MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
+    log_info "macOS target architecture: ${arch}"
+}
+
+# Build C BOF object files for macOS using Zig cross-compiler
 build_bofs_macos() {
-    log_info "Building BOF object files for macOS (aarch64)..."
-    local MACOS_ZIG_TARGET="aarch64-linux-none"
-    local MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
+    resolve_macos_arch
+    local arch="${MACOS_ARCH:-aarch64}"
+    log_info "Building BOF object files for macOS (${arch})..."
     local build_error=0
 
     mkdir -p output/bofs/macos
@@ -63,11 +91,11 @@ build_bofs_macos() {
     find src/bofs -name "*.c" | while read c_file; do
         base_name=$(basename "$c_file")
         output_name="${base_name%.c}.o"
-        log_action "Compiling ${base_name} for macOS aarch64"
+        log_action "Compiling ${base_name} for macOS ${arch}"
         /opt/zig/zig cc \
-            -target "${MACOS_ZIG_TARGET}" \
+            -target "${MACOS_BOF_ZIG_TARGET}" \
             -I "${MACOS_SDK}/usr/include" \
-            -D__aarch64__=1 -D__arm64__=1 \
+            ${MACOS_ARCH_DEFINES} \
             -DTARGET_MACOS=1 \
             -D_FORTIFY_SOURCE=0 \
             -fPIC -c "${c_file}" \
@@ -75,7 +103,7 @@ build_bofs_macos() {
             -I src/bofs/includes -w
 
         if [ $? -eq 0 ]; then
-            log_success "Built ${output_name} (macOS aarch64)"
+            log_success "Built ${output_name} (macOS ${arch})"
         else
             log_error "Failed to build ${output_name}"
             build_error=1
@@ -188,14 +216,10 @@ build_macos() {
     local output_file="$2"
     local description="$3"
 
-    local MACOS_CRYSTAL_TARGET="aarch64-apple-macosx12.0"
-    local MACOS_ZIG_TARGET="aarch64-macos-none"
-    local MACOS_ARCH="aarch64-apple-darwin"
-    local MACOS_PREFIX="/opt/multiarch-libs/${MACOS_ARCH}"
-    local MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
+    resolve_macos_arch
     local OBJ_FILE="${output_file}.o"
 
-    log_info "Building Dark Agent for macOS (${description}) via cross-compile..."
+    log_info "Building Dark Agent for macOS (${description}, ${MACOS_ARCH:-aarch64}) via cross-compile..."
 
     if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
         log_error "DARK_AGENT_CONFIG_PATH not set"
@@ -285,18 +309,14 @@ build_macos_dylib() {
     local output_file="$2"
     local description="$3"
 
-    local MACOS_CRYSTAL_TARGET="aarch64-apple-macosx12.0"
-    local MACOS_ZIG_TARGET="aarch64-macos-none"
-    local MACOS_ARCH="aarch64-apple-darwin"
-    local MACOS_PREFIX="/opt/multiarch-libs/${MACOS_ARCH}"
-    local MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
+    resolve_macos_arch
     # Crystal cross-compile base name (without .dylib) — Crystal appends .o to this
     local CRYSTAL_OUT="${output_file%.dylib}"
     local OBJ_FILE="${CRYSTAL_OUT}.o"
     local INIT_C="src/dark/crystal_dylib_init.c"
     local INIT_OBJ="output/crystal_dylib_init.o"
 
-    log_info "Building Dark Agent dylib for macOS (${description}) via cross-compile..."
+    log_info "Building Dark Agent dylib for macOS (${description}, ${MACOS_ARCH:-aarch64}) via cross-compile..."
 
     if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
         log_error "DARK_AGENT_CONFIG_PATH not set"

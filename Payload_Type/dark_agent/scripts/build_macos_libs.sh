@@ -1,6 +1,9 @@
 #!/bin/bash
 # Builds macOS static libraries from source using Zig as the cross-compiler.
-# Runs once at Docker image build time. Produces libs under /opt/multiarch-libs/aarch64-apple-darwin/.
+# Runs once at Docker image build time. Produces libs under /opt/multiarch-libs/<arch>-apple-darwin/.
+#
+# Usage: ./build_macos_libs.sh [aarch64|x86_64]
+#   Default: aarch64
 #
 # Requires:
 #   - zig in PATH
@@ -9,10 +12,31 @@
 
 set -e
 
-MACOS_TARGET="aarch64-macos-none"
+ARCH="${1:-aarch64}"
+
+case "$ARCH" in
+    aarch64)
+        MACOS_TARGET="aarch64-macos-none"
+        MACOS_PREFIX="/opt/multiarch-libs/aarch64-apple-darwin"
+        OPENSSL_TARGET="darwin64-arm64"
+        LIBEVENT_HOST="aarch64-apple-darwin"
+        ;;
+    x86_64)
+        MACOS_TARGET="x86_64-macos-none"
+        MACOS_PREFIX="/opt/multiarch-libs/x86_64-apple-darwin"
+        OPENSSL_TARGET="darwin64-x86_64"
+        LIBEVENT_HOST="x86_64-apple-darwin"
+        ;;
+    *)
+        echo "Usage: $0 [aarch64|x86_64]"
+        exit 1
+        ;;
+esac
+
 MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
-MACOS_PREFIX="/opt/multiarch-libs/aarch64-apple-darwin"
 JOBS=2
+
+echo "[*] Building macOS static libraries for ${ARCH}..."
 
 ZIG_CC="zig cc -target ${MACOS_TARGET} -isysroot ${MACOS_SDK}"
 ZIG_CXX="zig c++ -target ${MACOS_TARGET} -isysroot ${MACOS_SDK}"
@@ -56,7 +80,7 @@ CC="zig cc" \
 CFLAGS="-target ${MACOS_TARGET} -isysroot ${MACOS_SDK} -DOPENSSL_NO_APPLE_CRYPTO_RANDOM" \
 AR="${ZIG_AR}" \
 RANLIB="${ZIG_RANLIB}" \
-./Configure darwin64-arm64 \
+./Configure ${OPENSSL_TARGET} \
     no-shared \
     no-tests \
     no-ui-console \
@@ -97,7 +121,7 @@ CXX="${ZIG_CXX}" \
 AR="/tmp/zig-ar" \
 RANLIB="/tmp/zig-ranlib" \
 ./configure \
-    --host=aarch64-apple-darwin \
+    --host=${LIBEVENT_HOST} \
     --disable-shared \
     --enable-static \
     --disable-openssl \

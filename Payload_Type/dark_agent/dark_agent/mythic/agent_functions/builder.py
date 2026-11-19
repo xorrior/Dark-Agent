@@ -92,6 +92,15 @@ class DarkAgent(PayloadType):
             required=False,
             group_name="Build Options"
         ),
+        BuildParameter(
+            name="macos_arch",
+            parameter_type=BuildParameterType.ChooseOne,
+            description="macOS target architecture. Only applies to macOS builds.",
+            choices=["aarch64", "x86_64"],
+            default_value="aarch64",
+            required=False,
+            group_name="Build Options"
+        ),
     ]
 
     agent_path = pathlib.Path(".") / "dark_agent" / "mythic"
@@ -227,6 +236,7 @@ class DarkAgent(PayloadType):
         REALTIME = self.get_parameter("realtime")
         CHUNK_SIZE = self.get_parameter("chunk_size")
         OUTPUT_FORMAT = self.get_parameter("output_format")
+        MACOS_ARCH = self.get_parameter("macos_arch")
         IS_MACOS = self.selected_os == "macOS"
         IS_DYLIB = OUTPUT_FORMAT == "dylib"
 
@@ -411,6 +421,10 @@ class DarkAgent(PayloadType):
 
                 # Set environment variable for build script to use
                 self.env["DARK_AGENT_CONFIG_PATH"] = str(config_file)
+
+            # Set macOS architecture for cross-compile
+            if IS_MACOS:
+                self.env["MACOS_ARCH"] = MACOS_ARCH
 
             await SendMythicRPCPayloadUpdatebuildStep(MythicRPCPayloadUpdateBuildStepMessage(
                 PayloadUUID=self.uuid,
