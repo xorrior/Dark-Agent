@@ -90,8 +90,12 @@ LIBEVENT_VER=2.1.12
 wget -q "https://github.com/libevent/libevent/releases/download/release-${LIBEVENT_VER}-stable/libevent-${LIBEVENT_VER}-stable.tar.gz"
 tar -xzf "libevent-${LIBEVENT_VER}-stable.tar.gz"
 cd "libevent-${LIBEVENT_VER}-stable"
+# HAVE_ARC4RANDOM_BUF: glibc's stdlib.h already declares arc4random_buf,
+# which conflicts with libevent's static definition. This tells libevent
+# to use the system version instead of defining its own.
 CC="${ZIG_CC}" \
 CXX="${ZIG_CXX}" \
+CFLAGS="-DHAVE_ARC4RANDOM_BUF" \
 AR="/tmp/zig-ar" \
 RANLIB="/tmp/zig-ranlib" \
 ./configure \
