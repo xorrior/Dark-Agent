@@ -202,6 +202,12 @@ build_macos() {
         exit 1
     fi
 
+    # Add profile-specific flags (same logic as build_agent)
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
     log_info "Phase 1: Crystal → object file (target: ${MACOS_CRYSTAL_TARGET})"
     PKG_CONFIG_LIBDIR="${MACOS_PREFIX}/lib/pkgconfig" \
     crystal build \
@@ -210,6 +216,7 @@ build_macos() {
         --static \
         -Dpreview_mt \
         -Dgc_none \
+        ${profile_flags} \
         ${crystal_flags} \
         -o "${output_file}" \
         src/dark/dark-agent.cr
@@ -272,13 +279,124 @@ build_macos_debug() {
     build_macos "-D debug" "output/dark-agent-macos-debug" "debug mode"
 }
 
+# Build Dark Agent as macOS dylib via two-phase Crystal cross-compile + Zig link
+build_macos_dylib() {
+    local crystal_flags="$1"   # extra crystal flags (e.g. "-D debug")
+    local output_file="$2"
+    local description="$3"
+
+    local MACOS_CRYSTAL_TARGET="aarch64-apple-macosx12.0"
+    local MACOS_ZIG_TARGET="aarch64-macos-none"
+    local MACOS_ARCH="aarch64-apple-darwin"
+    local MACOS_PREFIX="/opt/multiarch-libs/${MACOS_ARCH}"
+    local MACOS_SDK="/opt/macos-sdk/MacOSX12.3.sdk"
+    # Crystal cross-compile base name (without .dylib) — Crystal appends .o to this
+    local CRYSTAL_OUT="${output_file%.dylib}"
+    local OBJ_FILE="${CRYSTAL_OUT}.o"
+    local INIT_C="src/dark/crystal_dylib_init.c"
+    local INIT_OBJ="output/crystal_dylib_init.o"
+
+    log_info "Building Dark Agent dylib for macOS (${description}) via cross-compile..."
+
+    if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
+        log_error "DARK_AGENT_CONFIG_PATH not set"
+        exit 1
+    fi
+
+    # Add profile-specific flags (same logic as build_agent)
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
+    log_info "Phase 1: Crystal → object file (target: ${MACOS_CRYSTAL_TARGET})"
+    PKG_CONFIG_LIBDIR="${MACOS_PREFIX}/lib/pkgconfig" \
+    crystal build \
+        --cross-compile \
+        --target "${MACOS_CRYSTAL_TARGET}" \
+        --static \
+        -Dpreview_mt \
+        -Dgc_none \
+        ${profile_flags} \
+        ${crystal_flags} \
+        -o "${CRYSTAL_OUT}" \
+        src/dark/dark-agent-dylib.cr
+
+    if [ $? -ne 0 ]; then
+        log_error "Crystal cross-compile failed"
+        exit 1
+    fi
+
+    log_info "Phase 2: Compile Crystal runtime constructor stub"
+    /opt/zig/zig cc -target "${MACOS_ZIG_TARGET}" \
+        -c "${INIT_C}" \
+        -o "${INIT_OBJ}"
+
+    if [ $? -ne 0 ]; then
+        log_error "Failed to compile Crystal dylib init stub"
+        exit 1
+    fi
+
+    log_info "Phase 3: Compile GC darwin stubs"
+    cat > /tmp/gc_darwin_stubs.c << 'GCEOF'
+void GC_push_all_stacks(void) {}
+void GC_darwin_register_mach_handler_thread(void *p) { (void)p; }
+void GC_start_world(void) {}
+void GC_stop_world(void) {}
+GCEOF
+    /opt/zig/zig cc -target "${MACOS_ZIG_TARGET}" \
+        -c /tmp/gc_darwin_stubs.c \
+        -o output/gc_darwin_stubs.o
+
+    log_info "Phase 4: Zig → Mach-O dylib"
+    /opt/zig/zig cc \
+        -target "${MACOS_ZIG_TARGET}" \
+        -dynamiclib \
+        -install_name @rpath/dark-agent.dylib \
+        "${OBJ_FILE}" \
+        "${INIT_OBJ}" \
+        output/gc_darwin_stubs.o \
+        -o "${output_file}" \
+        -L"${MACOS_PREFIX}/lib" \
+        -L"${MACOS_SDK}/usr/lib" \
+        -isysroot "${MACOS_SDK}" \
+        -lssl -lcrypto \
+        -lpcre2-8 \
+        -lgc \
+        -lz \
+        -lpthread \
+        -levent \
+        -liconv \
+        -dead_strip
+
+    if [ $? -ne 0 ]; then
+        log_error "Zig dylib link failed"
+        exit 1
+    fi
+
+    rm -f "${OBJ_FILE}" "${INIT_OBJ}"
+
+    # Ad-hoc codesign for macOS 14+
+    rcodesign sign --adhoc "${output_file}"
+
+    log_success "Built Dark Agent dylib (${description}) for macOS"
+}
+
+build_macos_dylib_release() {
+    build_macos_dylib "--release --no-debug" "output/dark-agent-macos.dylib" "release mode"
+}
+
+build_macos_dylib_debug() {
+    build_macos_dylib "-D debug" "output/dark-agent-macos-debug.dylib" "debug mode"
+}
 
 # Clean outputs
 clean() {
     log_action "Cleaning output directory..."
     rm -f output/dark-agent output/dark-agent-debug output/dark-agent-direct output/dark-agent-direct.ll output/socks-server output/dark-agent-socks-debug output/dark-agent-macos output/dark-agent-macos-debug output/dark-agent-macos*.o
+    rm -f output/dark-agent-macos.dylib output/dark-agent-macos-debug.dylib output/crystal_dylib_init.o
     rm -f output/bofs/*.o output/bofs/macos/*.o 2>/dev/null || true
-    log_success "Cleaned Dark Agent builds and BOF object files"
+    log_success "Cleaned Dark Agent builds, dylibs, and BOF object files"
 }
 
 # Display usage
@@ -297,6 +415,8 @@ usage() {
     echo "  -B    Build BOF object files for macOS (aarch64)"
     echo "  -m    Build macOS Mach-O binary (release)"
     echo "  -M    Build macOS Mach-O binary (debug)"
+    echo "  -l    Build macOS dylib (release)"
+    echo "  -L    Build macOS dylib (debug)"
     echo "  -h    Show this help message"
 }
 
@@ -340,6 +460,12 @@ execute_build() {
         "macos-debug")
             build_macos_debug
             ;;
+        "macos-dylib")
+            build_macos_dylib_release
+            ;;
+        "macos-dylib-debug")
+            build_macos_dylib_debug
+            ;;
         "clean")
             clean
             return 0
@@ -359,7 +485,7 @@ if [ $# -eq 0 ]; then
     exit 0
 fi
 
-while getopts "abdrcDsShjBmMp:x:" opt; do
+while getopts "abdrcDsShjBmMlLp:x:" opt; do
     case $opt in
         a) BUILD_ACTION="all" ;;
         b) BUILD_ACTION="bofs" ;;
@@ -373,6 +499,8 @@ while getopts "abdrcDsShjBmMp:x:" opt; do
         B) BUILD_ACTION="bofs-macos" ;;
         m) BUILD_ACTION="macos" ;;
         M) BUILD_ACTION="macos-debug" ;;
+        l) BUILD_ACTION="macos-dylib" ;;
+        L) BUILD_ACTION="macos-dylib-debug" ;;
         p)
             PROFILE_TYPE="$OPTARG"
             if [ "$PROFILE_TYPE" != "http" ] && [ "$PROFILE_TYPE" != "httpx" ]; then
