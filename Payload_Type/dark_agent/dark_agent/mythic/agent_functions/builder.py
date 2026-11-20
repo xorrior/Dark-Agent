@@ -86,7 +86,7 @@ class DarkAgent(PayloadType):
         BuildParameter(
             name="output_format",
             parameter_type=BuildParameterType.ChooseOne,
-            description="Output format: 'bin' produces a standalone executable, 'dylib' produces a macOS dynamic library (.dylib), 'so' produces a Linux shared object (.so). Both dylib and so export a dark_agent_init() function for dlopen-based loading.",
+            description="Output format: 'bin' produces a standalone executable (macOS or Linux). 'dylib' produces a macOS-only dynamic library (.dylib). 'so' produces a Linux-only shared object (.so). Selecting dylib for Linux or so for macOS will fail. Both dylib and so export dark_agent_init() for dlopen-based loading.",
             choices=["bin", "dylib", "so"],
             default_value="bin",
             required=False,
