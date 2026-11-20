@@ -314,6 +314,188 @@ build_linux_cross() {
     log_success "Built Dark Agent (${description}) for Linux aarch64"
 }
 
+# Build Dark Agent as Linux x86_64 .so via two-phase Crystal cross-compile + link
+build_linux_so() {
+    local crystal_flags="$1"   # extra crystal flags (e.g. "-D debug")
+    local output_file="$2"
+    local description="$3"
+
+    # Crystal base name (without .so) — Crystal appends .o to this
+    local CRYSTAL_OUT="${output_file%.so}"
+    local OBJ_FILE="${CRYSTAL_OUT}.o"
+    local INIT_C="src/dark/crystal_dylib_init.c"
+    local INIT_OBJ="output/crystal_so_init.o"
+
+    log_info "Building Dark Agent .so for Linux x86_64 (${description})..."
+
+    if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
+        log_error "DARK_AGENT_CONFIG_PATH not set"
+        exit 1
+    fi
+
+    # Add profile-specific flags
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
+    log_info "Phase 1: Crystal → object file (native x86_64)"
+    PKG_CONFIG_PATH="/opt/openssl-3/lib64/pkgconfig" \
+    crystal build \
+        --cross-compile \
+        --target "x86_64-linux-gnu" \
+        --static \
+        -Dpreview_mt \
+        ${profile_flags} \
+        ${crystal_flags} \
+        -o "${CRYSTAL_OUT}" \
+        src/dark/dark-agent-dylib.cr
+
+    if [ $? -ne 0 ]; then
+        log_error "Crystal cross-compile failed"
+        exit 1
+    fi
+
+    log_info "Phase 2: Compile Crystal runtime constructor stub"
+    gcc -fPIC -c "${INIT_C}" -o "${INIT_OBJ}"
+
+    if [ $? -ne 0 ]; then
+        log_error "Failed to compile Crystal .so init stub"
+        exit 1
+    fi
+
+    log_info "Phase 3: Link → ELF shared object"
+    gcc -shared -fPIC \
+        "${OBJ_FILE}" \
+        "${INIT_OBJ}" \
+        -o "${output_file}" \
+        -Wl,--as-needed \
+        -Wl,-Bstatic \
+        -L/opt/openssl-3/lib64 -lssl -lcrypto \
+        -lpcre2-8 \
+        -lgc \
+        -levent \
+        -lz \
+        -Wl,-Bdynamic \
+        -lpthread \
+        -ldl \
+        -lm
+
+    if [ $? -ne 0 ]; then
+        log_error "Shared object link failed"
+        exit 1
+    fi
+
+    rm -f "${OBJ_FILE}" "${INIT_OBJ}"
+
+    log_success "Built Dark Agent .so (${description}) for Linux x86_64"
+}
+
+build_linux_so_release() {
+    build_linux_so "--release --no-debug" "output/dark-agent.so" "release mode"
+    strip output/dark-agent.so
+    log_success "Stripped release .so ($(du -sh output/dark-agent.so | cut -f1))"
+}
+
+build_linux_so_debug() {
+    build_linux_so "-D debug" "output/dark-agent-debug.so" "debug mode"
+}
+
+# Build Dark Agent as Linux aarch64 .so via Crystal cross-compile + Zig link
+build_linux_cross_so() {
+    local crystal_flags="$1"   # extra crystal flags (e.g. "-D debug")
+    local output_file="$2"
+    local description="$3"
+
+    local LINUX_CRYSTAL_TARGET="aarch64-linux-gnu"
+    local LINUX_ZIG_TARGET="aarch64-linux-gnu"
+    local LINUX_PREFIX="/opt/multiarch-libs/aarch64-linux-gnu"
+    # Crystal base name (without .so) — Crystal appends .o to this
+    local CRYSTAL_OUT="${output_file%.so}"
+    local OBJ_FILE="${CRYSTAL_OUT}.o"
+    local INIT_C="src/dark/crystal_dylib_init.c"
+    local INIT_OBJ="output/crystal_so_init.o"
+
+    log_info "Building Dark Agent .so for Linux aarch64 (${description}) via cross-compile..."
+
+    if [ -z "$DARK_AGENT_CONFIG_PATH" ]; then
+        log_error "DARK_AGENT_CONFIG_PATH not set"
+        exit 1
+    fi
+
+    # Add profile-specific flags
+    local profile_flags=""
+    if [ "$PROFILE_TYPE" = "httpx" ]; then
+        profile_flags="-D httpx_profile"
+    fi
+
+    log_info "Phase 1: Crystal → object file (target: ${LINUX_CRYSTAL_TARGET})"
+    PKG_CONFIG_LIBDIR="${LINUX_PREFIX}/lib/pkgconfig" \
+    crystal build \
+        --cross-compile \
+        --target "${LINUX_CRYSTAL_TARGET}" \
+        --static \
+        -Dpreview_mt \
+        ${profile_flags} \
+        ${crystal_flags} \
+        -o "${CRYSTAL_OUT}" \
+        src/dark/dark-agent-dylib.cr
+
+    if [ $? -ne 0 ]; then
+        log_error "Crystal cross-compile failed"
+        exit 1
+    fi
+
+    log_info "Phase 2: Compile Crystal runtime constructor stub"
+    /opt/zig/zig cc -target "${LINUX_ZIG_TARGET}" \
+        -fPIC \
+        -c "${INIT_C}" \
+        -o "${INIT_OBJ}"
+
+    if [ $? -ne 0 ]; then
+        log_error "Failed to compile Crystal .so init stub"
+        exit 1
+    fi
+
+    log_info "Phase 3: Zig → ELF shared object (aarch64)"
+    /opt/zig/zig cc \
+        -target "${LINUX_ZIG_TARGET}" \
+        -shared \
+        "${OBJ_FILE}" \
+        "${INIT_OBJ}" \
+        -o "${output_file}" \
+        -L"${LINUX_PREFIX}/lib" \
+        -L"${LINUX_PREFIX}/lib64" \
+        -Wl,--as-needed \
+        -Wl,-Bstatic \
+        -lssl -lcrypto \
+        -lpcre2-8 \
+        -lgc \
+        -levent \
+        -lz \
+        -Wl,-Bdynamic \
+        -lpthread \
+        -ldl \
+        -lm
+
+    if [ $? -ne 0 ]; then
+        log_error "Zig shared object link failed"
+        exit 1
+    fi
+
+    rm -f "${OBJ_FILE}" "${INIT_OBJ}"
+
+    log_success "Built Dark Agent .so (${description}) for Linux aarch64"
+}
+
+build_linux_cross_so_release() {
+    build_linux_cross_so "--release --no-debug" "output/dark-agent-linux-aarch64.so" "release mode"
+}
+
+build_linux_cross_so_debug() {
+    build_linux_cross_so "-D debug" "output/dark-agent-linux-aarch64-debug.so" "debug mode"
+}
+
 build_linux_cross_release() {
     build_linux_cross "--release --no-debug" "output/dark-agent-linux-aarch64" "release mode"
     strip output/dark-agent-linux-aarch64
@@ -530,8 +712,9 @@ clean() {
     rm -f output/dark-agent output/dark-agent-debug output/dark-agent-direct output/dark-agent-direct.ll output/socks-server output/dark-agent-socks-debug output/dark-agent-macos output/dark-agent-macos-debug output/dark-agent-macos*.o
     rm -f output/dark-agent-linux-aarch64 output/dark-agent-linux-aarch64-debug output/dark-agent-linux-aarch64*.o
     rm -f output/dark-agent-macos.dylib output/dark-agent-macos-debug.dylib output/crystal_dylib_init.o
+    rm -f output/dark-agent.so output/dark-agent-debug.so output/dark-agent-linux-aarch64.so output/dark-agent-linux-aarch64-debug.so output/crystal_so_init.o
     rm -f output/bofs/*.o output/bofs/macos/*.o 2>/dev/null || true
-    log_success "Cleaned Dark Agent builds, dylibs, and BOF object files"
+    log_success "Cleaned Dark Agent builds, dylibs, shared objects, and BOF object files"
 }
 
 # Display usage
@@ -555,6 +738,10 @@ usage() {
     echo "  -L    Build macOS dylib (debug)"
     echo "  -f    Build Linux aarch64 ELF binary (release)"
     echo "  -F    Build Linux aarch64 ELF binary (debug)"
+    echo "  -g    Build Linux x86_64 .so shared object (release)"
+    echo "  -G    Build Linux x86_64 .so shared object (debug)"
+    echo "  -n    Build Linux aarch64 .so shared object (release)"
+    echo "  -N    Build Linux aarch64 .so shared object (debug)"
     echo "  -h    Show this help message"
 }
 
@@ -607,6 +794,18 @@ execute_build() {
         "macos-dylib-debug")
             build_macos_dylib_debug
             ;;
+        "linux-so")
+            build_linux_so_release
+            ;;
+        "linux-so-debug")
+            build_linux_so_debug
+            ;;
+        "linux-cross-so")
+            build_linux_cross_so_release
+            ;;
+        "linux-cross-so-debug")
+            build_linux_cross_so_debug
+            ;;
         "linux-cross")
             build_linux_cross_release
             ;;
@@ -632,7 +831,7 @@ if [ $# -eq 0 ]; then
     exit 0
 fi
 
-while getopts "abdrcDsShjBemMlLfFp:x:" opt; do
+while getopts "abdrcDsShjBemMlLfFgGnNp:x:" opt; do
     case $opt in
         a) BUILD_ACTION="all" ;;
         b) BUILD_ACTION="bofs" ;;
@@ -651,6 +850,10 @@ while getopts "abdrcDsShjBemMlLfFp:x:" opt; do
         L) BUILD_ACTION="macos-dylib-debug" ;;
         f) BUILD_ACTION="linux-cross" ;;
         F) BUILD_ACTION="linux-cross-debug" ;;
+        g) BUILD_ACTION="linux-so" ;;
+        G) BUILD_ACTION="linux-so-debug" ;;
+        n) BUILD_ACTION="linux-cross-so" ;;
+        N) BUILD_ACTION="linux-cross-so-debug" ;;
         p)
             PROFILE_TYPE="$OPTARG"
             if [ "$PROFILE_TYPE" != "http" ] && [ "$PROFILE_TYPE" != "httpx" ]; then

