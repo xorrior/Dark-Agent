@@ -86,9 +86,9 @@ class DarkAgent(PayloadType):
         BuildParameter(
             name="output_format",
             parameter_type=BuildParameterType.ChooseOne,
-            description="Output format: 'bin' produces a standalone executable (macOS or Linux). 'dylib' produces a macOS-only dynamic library (.dylib). 'so' produces a Linux-only shared object (.so). Selecting dylib for Linux or so for macOS will fail. Both dylib and so export dark_agent_init() for dlopen-based loading.",
-            choices=["bin", "dylib", "so"],
-            default_value="bin",
+            description="Output format: 'default' produces a standalone executable. 'c-shared' produces a shared library (.dylib on macOS, .so on Linux) with an exported dark_agent_init() function for dlopen-based loading.",
+            choices=["default", "c-shared"],
+            default_value="default",
             required=False,
             group_name="Build Options"
         ),
@@ -238,17 +238,7 @@ class DarkAgent(PayloadType):
         OUTPUT_FORMAT = self.get_parameter("output_format")
         ARCHITECTURE = self.get_parameter("architecture")
         IS_MACOS = self.selected_os == "macOS"
-        IS_DYLIB = OUTPUT_FORMAT == "dylib"
-        IS_SO = OUTPUT_FORMAT == "so"
-
-        if IS_DYLIB and not IS_MACOS:
-            resp.set_status(BuildStatus.Error)
-            resp.build_message = "dylib output format is only supported for macOS builds"
-            return resp
-        if IS_SO and IS_MACOS:
-            resp.set_status(BuildStatus.Error)
-            resp.build_message = "so output format is only supported for Linux builds. Use 'dylib' for macOS."
-            return resp
+        IS_SHARED = OUTPUT_FORMAT == "c-shared"
         tmp = tempfile.TemporaryDirectory(suffix=self.uuid)
         agent_build_path = Path(tmp.name)
 
@@ -503,9 +493,8 @@ class DarkAgent(PayloadType):
                     profile_name = c2_profile
                     break
 
-            if IS_MACOS and IS_DYLIB:
-                # macOS dylib cross-compile via Crystal + Zig.
-                # Produces a .dylib with exported dark_agent_init() symbol.
+            if IS_MACOS and IS_SHARED:
+                # macOS c-shared: Crystal + Zig → .dylib with dark_agent_init()
                 if DEBUG_MODE:
                     build_cmd.extend(["-p", profile_name, "-L"])
                     output_file = agent_build_path / "output/dark-agent-macos-debug.dylib"
@@ -513,9 +502,8 @@ class DarkAgent(PayloadType):
                     build_cmd.extend(["-p", profile_name, "-l"])
                     output_file = agent_build_path / "output/dark-agent-macos.dylib"
                 binary_type = "Mach-O dylib"
-            elif IS_SO and ARCHITECTURE == "aarch64":
-                # Linux aarch64 .so cross-compile via Crystal + Zig.
-                # Produces a .so with exported dark_agent_init() symbol.
+            elif IS_SHARED and ARCHITECTURE == "aarch64":
+                # Linux aarch64 c-shared: Crystal + Zig → .so with dark_agent_init()
                 if DEBUG_MODE:
                     build_cmd.extend(["-p", profile_name, "-N"])
                     output_file = agent_build_path / "output/dark-agent-linux-aarch64-debug.so"
@@ -523,9 +511,8 @@ class DarkAgent(PayloadType):
                     build_cmd.extend(["-p", profile_name, "-n"])
                     output_file = agent_build_path / "output/dark-agent-linux-aarch64.so"
                 binary_type = "ELF shared object (aarch64)"
-            elif IS_SO:
-                # Linux x86_64 native .so build.
-                # Produces a .so with exported dark_agent_init() symbol.
+            elif IS_SHARED:
+                # Linux x86_64 c-shared: Crystal + gcc → .so with dark_agent_init()
                 if DEBUG_MODE:
                     build_cmd.extend(["-p", profile_name, "-G"])
                     output_file = agent_build_path / "output/dark-agent-debug.so"
@@ -590,9 +577,9 @@ class DarkAgent(PayloadType):
                     StepSuccess=True
                 ))
 
-                if IS_DYLIB:
+                if IS_SHARED and IS_MACOS:
                     self.file_extension = "dylib"
-                elif IS_SO:
+                elif IS_SHARED:
                     self.file_extension = "so"
                 else:
                     self.file_extension = "bin"
